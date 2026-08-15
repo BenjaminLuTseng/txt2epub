@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>txt2epub</title>
+<meta name="description" content="Turn plain-text books into EPUB 3 in your browser. Chinese, Japanese and Korean supported. Nothing is uploaded."/>
+<link rel="stylesheet" href="style.css"/>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>📖</text></svg>"/>
+</head>
+<body>
+
+<header>
+  <h1>txt<span>2</span>epub</h1>
+  <p class="tag">Plain text in, EPUB out. Chinese, Japanese and Korean text welcome.</p>
+  <p class="ai-state off" id="ai-state">Runs entirely in your browser — no file ever leaves this machine.</p>
+  <button type="button" id="open-key" class="key-btn link">Set API key</button>
+</header>
+
+<main>
+
+<section id="drop" class="dropzone">
+  <div class="drop-inner">
+    <svg viewBox="0 0 24 24" width="44" height="44" fill="none" stroke="currentColor" stroke-width="1.4">
+      <path d="M12 16V4m0 0L8 8m4-4 4 4"/><path d="M4 16v3a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-3"/>
+    </svg>
+    <p><strong>Drop a .txt file here</strong></p>
+    <p class="muted">or <button type="button" id="pick" class="link">choose a file</button></p>
+    <input type="file" id="file" accept=".txt,text/plain" hidden/>
+  </div>
+</section>
+
+<div id="banner" class="banner" hidden></div>
+
+<section id="workspace" hidden>
+
+  <div class="col col-left">
+    <div class="card">
+      <div class="cover-frame">
+        <img id="cover-img" alt="Generated cover"/>
+        <div id="cover-empty" class="cover-empty">No cover yet</div>
+        <div id="cover-busy" class="cover-busy" hidden><span class="spin"></span></div>
+      </div>
+      <label class="field">
+        <span>Cover direction <em>(optional)</em></span>
+        <input id="style-hint" type="text" placeholder="e.g. quiet, botanical, 1930s Shanghai"/>
+      </label>
+      <div class="row">
+        <button id="gen-cover" class="primary">Generate cover</button>
+        <button id="dl-svg" class="ghost" disabled>SVG</button>
+      </div>
+      <p id="cover-note" class="note"></p>
+      <details id="cover-tweak" hidden>
+        <summary>Tweak the design</summary>
+        <div class="swatches">
+          <label>Background <input type="color" data-key="background"/></label>
+          <label>Gradient <input type="color" data-key="background2"/></label>
+          <label>Accent <input type="color" data-key="accent"/></label>
+          <label>Title <input type="color" data-key="title"/></label>
+          <label>Author <input type="color" data-key="author"/></label>
+        </div>
+        <div class="row">
+          <label class="field grow"><span>Motif</span>
+            <select id="motif">
+              <option>none</option><option>arcs</option><option>rings</option>
+              <option>mountains</option><option>grid</option><option>rays</option>
+              <option>waves</option><option>bars</option><option>dots</option>
+              <option>frame</option><option>horizon</option>
+            </select>
+          </label>
+          <label class="field grow"><span>Type</span>
+            <select id="typeface"><option>serif</option><option>sans</option></select>
+          </label>
+          <label class="field grow"><span>Layout</span>
+            <select id="layout">
+              <option>centered</option><option>upper</option><option>lower</option><option>band</option>
+            </select>
+          </label>
+        </div>
+        <button id="rerender" class="ghost wide">Re-render</button>
+      </details>
+    </div>
+
+    <div class="card">
+      <h2>Book details</h2>
+      <label class="field"><span>Title</span><input id="title" type="text"/></label>
+      <label class="field"><span>Author</span><input id="author" type="text"/></label>
+      <label class="field"><span>Series <em>(optional)</em></span><input id="series" type="text"/></label>
+      <label class="field"><span>Description</span><textarea id="description" rows="3"></textarea></label>
+      <label class="field"><span>Language</span>
+        <select id="language">
+          <option value="zh-Hans">Chinese — Simplified</option>
+          <option value="zh-Hant">Chinese — Traditional</option>
+          <option value="en">English</option>
+          <option value="ja">Japanese</option>
+          <option value="ko">Korean</option>
+        </select>
+      </label>
+      <button id="analyze" class="ghost wide">Ask Claude to identify this book</button>
+      <p id="meta-note" class="note"></p>
+    </div>
+  </div>
+
+  <div class="col col-right">
+    <div class="card">
+      <div class="chapters-head">
+        <h2>Chapters <span id="chap-count" class="pill"></span></h2>
+        <div class="file-facts" id="facts"></div>
+      </div>
+
+      <details class="resplit">
+        <summary>Chapters split wrongly?</summary>
+        <p class="muted small">Each line is matched against your pattern after trimming. Leave empty to auto-detect.</p>
+        <label class="field"><span>Custom heading pattern (regex)</span>
+          <input id="regex" type="text" placeholder="^第[一二三四五六七八九十百千0-9]+章.*$"/></label>
+        <div class="row">
+          <button id="apply-regex" class="ghost">Re-split</button>
+          <button id="auto-split" class="ghost">Auto-detect</button>
+          <button id="single" class="ghost">One chapter</button>
+        </div>
+        <p class="muted small" id="diag-line"></p>
+      </details>
+
+      <div class="bulk">
+        <button id="all-on" class="link">Include all</button>
+        <button id="all-off" class="link">Exclude all</button>
+      </div>
+
+      <ol id="chapters" class="chapters"></ol>
+    </div>
+
+    <div class="card build">
+      <label class="check"><input type="checkbox" id="with-cover" checked/> Embed the cover</label>
+      <button id="build" class="primary big">Build EPUB</button>
+      <p id="build-note" class="note"></p>
+    </div>
+  </div>
+
+</section>
+
+<footer>
+  <p class="muted small">
+    Everything — decoding, chapter detection, cover rendering, EPUB packaging — happens in this
+    tab. Your book is never uploaded. If you set an API key it is stored in this browser only and
+    sent directly to <code>api.anthropic.com</code>, never to this site.
+    <a href="https://github.com/BenjaminLuTseng/txt2epub" target="_blank" rel="noopener">Source</a>.
+  </p>
+</footer>
+</main>
+
+<div id="peek" class="peek" hidden>
+  <div class="peek-box">
+    <button id="peek-close" class="peek-close">&times;</button>
+    <h3 id="peek-title"></h3>
+    <div id="peek-body"></div>
+  </div>
+</div>
+
+<div id="keybox" class="peek" hidden>
+  <div class="peek-box narrow">
+    <button id="key-close" class="peek-close">&times;</button>
+    <h3>Anthropic API key</h3>
+    <p class="muted small">
+      Optional. Without one the app still converts books — you get filename-based title and author,
+      heuristic chapter detection, and a locally generated cover. With one, Claude identifies the
+      book, reviews the chapter split, and designs the cover.
+    </p>
+    <p class="muted small">
+      The key is saved in this browser's localStorage and sent only to <code>api.anthropic.com</code>.
+      This page is static and has no server that could receive it. Anyone with access to this browser
+      profile can read it — don't use a shared machine.
+    </p>
+    <label class="field"><span>Key</span>
+      <input id="api-key" type="password" placeholder="sk-ant-..." autocomplete="off"/></label>
+    <div class="row">
+      <button id="key-save" class="primary">Save</button>
+      <button id="key-clear" class="ghost">Clear</button>
+    </div>
+    <p id="key-note" class="note"></p>
+  </div>
+</div>
+
+<script type="module" src="js/main.js"></script>
+</body>
+</html>

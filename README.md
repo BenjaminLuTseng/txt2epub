@@ -1,11 +1,34 @@
 # txt2epub
 
-Drop a `.txt` book into a browser page, get a proper EPUB 3 back. Chinese,
-Japanese and Korean text is a first-class case, not an afterthought.
+Drop a `.txt` book in, get a proper EPUB 3 back. Chinese, Japanese and Korean
+text is a first-class case, not an afterthought.
 
 Claude identifies the title and author, reviews the chapter split, and designs
 the cover. Everything still works without an API key — you just get heuristics
 and a locally generated cover instead.
+
+There are two ways to run it, and they do the same thing.
+
+### 1. The web page — no install, nothing uploaded
+
+**→ https://benjaminlutseng.github.io/txt2epub/**
+
+A static page. Decoding, chapter detection, cover rendering and EPUB packaging
+all happen in the tab; your book never leaves your machine and there is no
+server to send it to. If you set an API key it is stored in that browser's
+localStorage and sent directly to `api.anthropic.com` — never to the site.
+
+Two things the browser version can't control:
+
+- **Cover fonts come from the viewer's machine.** macOS has Songti SC and
+  Hiragino Sans GB; Windows has SimSun and Microsoft YaHei. A machine with no
+  CJK font installed will render a Chinese title as tofu boxes.
+- **The cover is embedded as JPEG.** Canvas PNG is unoptimised and a smooth
+  gradient is near worst-case for it — a 1600×2400 cover came to ~650 KB,
+  dwarfing the book. JPEG at quality 0.9 gets the same image to a fraction of
+  that.
+
+### 2. The Python app — for local batch work
 
 ```bash
 pip install -r requirements.txt
@@ -14,7 +37,8 @@ python app.py                           # → http://127.0.0.1:5001
 ```
 
 Port 5000 is occupied by AirPlay Receiver on macOS, so the default is 5001.
-Override with `PORT=8080 python app.py`.
+Override with `PORT=8080 python app.py`. This version renders covers with fonts
+it controls, and ships a Dockerfile if you want it hosted.
 
 ## What it does
 
@@ -102,13 +126,27 @@ docker build -t txt2epub . && docker run --rm -p 8080:8080 \
 
 ## Layout
 
+The two implementations are deliberate ports of each other — same encoding
+scoring, same heading patterns, same cover spec, same EPUB output.
+
 ```
+docs/                   the static site (GitHub Pages serves this)
+  index.html
+  js/ingest.js          encoding detection via TextDecoder
+  js/chapters.js        heading patterns, chapter and paragraph splitting
+  js/ai.js              Claude calls direct from the browser
+  js/cover.js           design spec → canvas PNG/JPEG and SVG
+  js/zip.js             ZIP writer (CompressionStream for deflate)
+  js/epub.js            EPUB 3 packaging
+  js/main.js            UI
+
 app.py                  Flask routes; jobs live in memory
 txt2epub/ingest.py      encoding detection + normalisation
 txt2epub/chapters.py    heading patterns, chapter and paragraph splitting
 txt2epub/ai.py          Claude calls (structured JSON output)
 txt2epub/cover.py       design spec → PNG and SVG
 txt2epub/epubwriter.py  EPUB 3 packaging
+diagnose.py             print what the detector sees in a file
 ```
 
 ## Notes
