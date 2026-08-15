@@ -2,11 +2,14 @@ FROM python:3.12-slim
 
 # fonts-noto-cjk is not optional: without a CJK font every Chinese, Japanese
 # and Korean cover title renders as tofu boxes. It is the bulk of the image.
+# It installs exactly what the renderer asks for, in /usr/share/fonts/opentype/noto:
+#   NotoSerifCJK-Regular.ttc  NotoSerifCJK-Bold.ttc
+#   NotoSansCJK-Regular.ttc   NotoSansCJK-Bold.ttc
+# fonts-noto-cjk-extra only adds weights we never request, so it is left out.
 # fonts-dejavu-core covers Latin titles.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         fonts-noto-cjk \
-        fonts-noto-cjk-extra \
         fonts-dejavu-core \
     && fc-cache -f \
     && rm -rf /var/lib/apt/lists/*
