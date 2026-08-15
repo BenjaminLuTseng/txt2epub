@@ -1,0 +1,26 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+.env
+.env.*
+!.env.example
+
+*.epub
+*.epub.zip
+sample.txt
+samples/
+covers/
+
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+.fly/
+fly.*.toml
+!fly.toml
+
+# machine-specific dev-server config with absolute paths
+.claude/

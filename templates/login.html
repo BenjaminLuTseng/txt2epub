@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>txt2epub — sign in</title>
+<link rel="stylesheet" href="/static/style.css"/>
+</head>
+<body class="login-page">
+<main class="login-wrap">
+  <form class="card login-card" method="post" action="/login{{ '?next=' + request.args.get('next') if request.args.get('next') else '' }}">
+    <h1>txt<span>2</span>epub</h1>
+    <p class="muted small">This instance is password protected.</p>
+    <label class="field">
+      <span>Password</span>
+      <input type="password" name="password" autocomplete="current-password" autofocus required/>
+    </label>
+    {% if error %}<p class="note bad">{{ error }}</p>{% endif %}
+    <button type="submit" class="primary wide">Sign in</button>
+  </form>
+</main>
+</body>
+</html>

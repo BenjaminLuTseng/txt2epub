@@ -1,0 +1,39 @@
+# Rename `app` below to something unique, then: fly launch --no-deploy && fly deploy
+app = "txt2epub"
+primary_region = "sjc"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  PORT = "8080"
+  MAX_UPLOAD_MB = "32"
+  JOB_TTL_SECONDS = "21600"
+  MAX_JOBS = "12"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  # Jobs are held in this machine's memory, so a second machine would not see
+  # an upload handled by the first. Keep it at one.
+  min_machines_running = 0
+
+  [http_service.concurrency]
+    type = "requests"
+    soft_limit = 12
+    hard_limit = 25
+
+[[http_service.checks]]
+  interval = "30s"
+  timeout = "5s"
+  grace_period = "10s"
+  method = "GET"
+  path = "/healthz"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  # Pillow rendering a 1600x2400 cover plus a book in memory needs headroom;
+  # 256 MB will OOM on a large upload.
+  memory = "1gb"
