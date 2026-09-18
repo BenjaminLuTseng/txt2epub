@@ -26,6 +26,12 @@ MAX_HEADING_LEN = 60
 # Real-world .txt headings often carry a section marker or brackets:
 #   正文 第一章 初雪   /   【第一章】初雪   /   ★第一章 初雪
 _PREFIX = r"(?:[【\[（(★☆◆◇※·\-—=＝\s　]*(?:正文|VIP|vip|卷[一二三四五六七八九十0-9]*)?[】\]）)\s　]*)?"
+# Some ebook releases prepend a short series/section label to every heading:
+#   清心居第二章引人入峒
+# Keep this deliberately short and require the heading to occupy the whole
+# line; prose containing "第一章" in the middle of a sentence must not match.
+_HEADING_LABEL = r"[一-鿿A-Za-z0-9·・—\-]{1,12}"
+_LABEL_PREFIX = rf"(?:{_HEADING_LABEL})?"
 _TAIL = r"[ \t　]*[:：、.．\-—~～]?[ \t　]*(?P<title>.{0,50}?)[】\]）)]?$"
 
 PATTERNS: list[tuple[str, re.Pattern[str]]] = [
@@ -39,6 +45,17 @@ PATTERNS: list[tuple[str, re.Pattern[str]]] = [
         "cn_chapter",
         re.compile(
             rf"^{_PREFIX}第[ \t]*[{_CN_NUM}]{{1,12}}[ \t]*[章回節节折](?![一-鿿]){_TAIL}"
+        ),
+    ),
+    (
+        # A common serialized-book format prefixes every heading with a short
+        # section label and runs the title directly into 章:
+        #   清心居第二章引人入峒
+        # It is kept separate so the normal prose-safety guard above remains
+        # intact; find_headings only promotes this family when it repeats.
+        "cn_chapter_prefixed",
+        re.compile(
+            rf"^{_HEADING_LABEL}第[ \t]*[{_CN_NUM}]{{1,12}}[ \t]*[章回節节折]{_TAIL}"
         ),
     ),
     (
@@ -134,10 +151,24 @@ def find_headings(lines: list[str], custom_regex: str | None = None) -> tuple[li
             continue
         found[name] = hits
 
+    # Keep a single strict heading available for a mixed sequence where the
+    # first chapter was repaired from release metadata and the remaining
+    # headings carry a short prefix.
+    strict_single = _candidate_lines(
+        lines, dict(PATTERNS)["cn_chapter"]
+    )
+
     # 第…章 decides. A book that uses it has its chapter structure right there,
     # so it wins even when a looser family matched more lines.
     if len(found.get("cn_chapter", [])) >= 2:
         best_name, best_hits = "cn_chapter", found["cn_chapter"]
+    elif len(found.get("cn_chapter_prefixed", [])) >= 2:
+        best_name, best_hits = "cn_chapter_prefixed", found["cn_chapter_prefixed"]
+        # A repaired first heading may use the normal form while the rest of
+        # the release uses a repeated label prefix. Keep both parts of the
+        # same chapter sequence.
+        if strict_single:
+            best_hits = sorted(set(best_hits) | set(strict_single))
     elif found:
         best_name, best_hits = max(found.items(), key=lambda kv: len(kv[1]))
     else:
@@ -147,7 +178,7 @@ def find_headings(lines: list[str], custom_regex: str | None = None) -> tuple[li
     # Volume lines are a coarser level, not a rival: keep them as headings so a
     # 卷 divider gets its own entry instead of being swallowed by the chapter
     # above it.
-    if best_name == "cn_chapter":
+    if best_name in ("cn_chapter", "cn_chapter_prefixed"):
         extra |= set(found.get("cn_volume", []))
 
     merged = sorted(set(best_hits) | extra)
@@ -239,6 +270,40 @@ def to_paragraphs(body: list[str]) -> list[str]:
     return [line.strip() for line in body if line.strip()]
 
 
+_EMBEDDED_FIRST_CHAPTER = re.compile(
+    rf"(?P<prefix>.*(?:內容|内容|處理|处理|稍後|稍后|正文|開始|开始).*?)"
+    rf"(?P<header>第[ \t]*[{_CN_NUM}]{{1,12}}[ \t]*[章回節节折].{{1,50}})$"
+)
+
+
+def _repair_embedded_first_heading(lines: list[str]) -> list[str]:
+    """Separate a first chapter header accidentally glued to release metadata.
+
+    A few wuxia releases begin with a status line such as
+    ``內容還在處理中,請稍後重第一章千裡求方`` and then continue the chapter body
+    on the following line.  Treating that entire line as prose loses chapter 1.
+    Limit the repair to the first 20 lines and require release-metadata words so
+    ordinary prose containing ``第一章`` is never rewritten.
+    """
+    repaired = list(lines)
+    for i, line in enumerate(repaired[:20]):
+        match = _EMBEDDED_FIRST_CHAPTER.fullmatch(line.strip())
+        if not match:
+            continue
+        prefix = match.group("prefix").strip()
+        header = match.group("header").strip()
+        # Make the repaired header conform to the normal heading rule even
+        # when the source runs the title directly into 章.
+        header = re.sub(
+            rf"^(第[ \t]*[{_CN_NUM}]{{1,12}}[ \t]*[章回節节折])",
+            r"\1 ",
+            header,
+        )
+        repaired[i:i + 1] = [prefix, header]
+        break
+    return repaired
+
+
 def split(
     lines: list[str], custom_regex: str | None = None, language: str = "en"
 ) -> tuple[list[Chapter], str]:
@@ -246,22 +311,26 @@ def split(
     whole_label = "正文" if cjk else "Full Text"
     front_label = "前言" if cjk else "Front Matter"
 
-    idxs, method = find_headings(lines, custom_regex)
+    working_lines = _repair_embedded_first_heading(lines)
+    idxs, method = find_headings(working_lines, custom_regex)
 
     if not idxs:
-        body = to_paragraphs(lines)
+        body = to_paragraphs(working_lines)
         return [Chapter(title=whole_label, paragraphs=body)] if body else [], "none"
 
     chapters: list[Chapter] = []
 
-    front = to_paragraphs(lines[: idxs[0]])
-    if front and sum(len(p) for p in front) > 40:
+    front = to_paragraphs(working_lines[: idxs[0]])
+    # Tiny release metadata blocks (title, author, "正文", separators) are not
+    # meaningful front matter. A slightly larger threshold prevents a 46-char
+    # header from becoming a bogus 前言 chapter while preserving real prefaces.
+    if front and sum(len(p) for p in front) > 80:
         chapters.append(Chapter(title=front_label, paragraphs=front))
 
-    bounds = idxs + [len(lines)]
+    bounds = idxs + [len(working_lines)]
     for start, end in zip(bounds, bounds[1:]):
-        title = lines[start].strip().lstrip("#").strip()
-        paragraphs = to_paragraphs(lines[start + 1 : end])
+        title = working_lines[start].strip().lstrip("#").strip()
+        paragraphs = to_paragraphs(working_lines[start + 1 : end])
         chapters.append(Chapter(title=title or "(untitled)", paragraphs=paragraphs))
 
     chapters, dropped = _drop_toc_block(chapters)

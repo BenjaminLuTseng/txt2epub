@@ -10,6 +10,7 @@ export const MAX_HEADING_LEN = 60;
 // Real-world headings often carry a section marker or brackets:
 //   正文 第一章 初雪   /   【第一章】初雪   /   ★第一章 初雪
 const PREFIX = '(?:[【\\[（(★☆◆◇※·\\-—=＝\\s　]*(?:正文|VIP|vip|卷[一二三四五六七八九十0-9]*)?[】\\]）)\\s　]*)?';
+const HEADING_LABEL = '[一-鿿A-Za-z0-9·・—\\-]{1,12}';
 const TAIL = '[ \\t　]*[:：、.．\\-—~～]?[ \\t　]*(?<title>.{0,50}?)[】\\]）)]?$';
 
 export const PATTERNS = [
@@ -19,6 +20,10 @@ export const PATTERNS = [
     // separate, coarser level and must not dilute this family's count.
     'cn_chapter',
     new RegExp(`^${PREFIX}第[ \\t]*[${CN_NUM}]{1,12}[ \\t]*[章回節节折](?![\\u4e00-\\u9fff])${TAIL}`, 'u'),
+  ],
+  [
+    'cn_chapter_prefixed',
+    new RegExp(`^${HEADING_LABEL}第[ \\t]*[${CN_NUM}]{1,12}[ \\t]*[章回節节折]${TAIL}`, 'u'),
   ],
   [
     'cn_volume',
@@ -93,9 +98,13 @@ export function findHeadings(lines, customRegex) {
 
   let method = '';
   let best = [];
+  const strictSingle = candidateLines(lines, PATTERNS.find(([n]) => n === 'cn_chapter')[1]);
   if ((found.cn_chapter || []).length >= 2) {
     method = 'cn_chapter';
     best = found.cn_chapter;
+  } else if ((found.cn_chapter_prefixed || []).length >= 2) {
+    method = 'cn_chapter_prefixed';
+    best = [...found.cn_chapter_prefixed, ...strictSingle];
   } else {
     for (const [name, hits] of Object.entries(found)) {
       if (hits.length > best.length) {
@@ -108,7 +117,9 @@ export function findHeadings(lines, customRegex) {
   const extra = new Set(candidateLines(lines, SPECIAL));
   // Volume lines are a coarser level, not a rival: keep them so a 卷 divider
   // gets its own entry instead of being swallowed by the chapter above it.
-  if (method === 'cn_chapter') for (const i of found.cn_volume || []) extra.add(i);
+  if (method === 'cn_chapter' || method === 'cn_chapter_prefixed') {
+    for (const i of found.cn_volume || []) extra.add(i);
+  }
 
   const merged = [...new Set([...best, ...extra])].sort((a, b) => a - b);
   return { idxs: merged, method: merged.length ? method || 'special_only' : 'none' };
@@ -160,6 +171,26 @@ export function toParagraphs(body) {
   return body.map((l) => l.trim()).filter(Boolean);
 }
 
+const EMBEDDED_FIRST_CHAPTER = new RegExp(
+  `^(?<prefix>.*(?:內容|内容|處理|处理|稍後|稍后|正文|開始|开始).*?)(?<header>第[ \\t]*[${CN_NUM}]{1,12}[ \\t]*[章回節节折].{1,50})$`,
+  'u',
+);
+
+function repairEmbeddedFirstHeading(lines) {
+  const repaired = [...lines];
+  for (let i = 0; i < Math.min(20, repaired.length); i++) {
+    const m = EMBEDDED_FIRST_CHAPTER.exec(repaired[i].trim());
+    if (!m) continue;
+    const header = m.groups.header.replace(
+      new RegExp(`^(第[ \\t]*[${CN_NUM}]{1,12}[ \\t]*[章回節节折])`),
+      '$1 ',
+    );
+    repaired.splice(i, 1, m.groups.prefix.trim(), header.trim());
+    break;
+  }
+  return repaired;
+}
+
 /** Discard a contents listing at the head of the file — very common in
  *  Chinese .txt releases, where every chapter title is printed as a bare list. */
 function dropTocBlock(chapters) {
@@ -180,11 +211,12 @@ function dropTocBlock(chapters) {
 
 export function split(lines, customRegex, language = 'en') {
   const cjk = /^(zh|ja|ko)/.test(language);
-  const { idxs, method: found } = findHeadings(lines, customRegex);
+  const workingLines = repairEmbeddedFirstHeading(lines);
+  const { idxs, method: found } = findHeadings(workingLines, customRegex);
   let method = found;
 
   if (!idxs.length) {
-    const body = toParagraphs(lines);
+    const body = toParagraphs(workingLines);
     return {
       chapters: body.length ? [new Chapter(cjk ? '正文' : 'Full Text', body)] : [],
       method: 'none',
@@ -192,16 +224,16 @@ export function split(lines, customRegex, language = 'en') {
   }
 
   let chapters = [];
-  const front = toParagraphs(lines.slice(0, idxs[0]));
-  if (front.length && front.reduce((n, p) => n + p.length, 0) > 40) {
+  const front = toParagraphs(workingLines.slice(0, idxs[0]));
+  if (front.length && front.reduce((n, p) => n + p.length, 0) > 80) {
     chapters.push(new Chapter(cjk ? '前言' : 'Front Matter', front));
   }
 
-  const bounds = [...idxs, lines.length];
+  const bounds = [...idxs, workingLines.length];
   for (let i = 0; i < bounds.length - 1; i++) {
     const start = bounds[i];
-    const title = lines[start].trim().replace(/^#+/, '').trim();
-    chapters.push(new Chapter(title || '(untitled)', toParagraphs(lines.slice(start + 1, bounds[i + 1]))));
+    const title = workingLines[start].trim().replace(/^#+/, '').trim();
+    chapters.push(new Chapter(title || '(untitled)', toParagraphs(workingLines.slice(start + 1, bounds[i + 1]))));
   }
 
   const trimmed = dropTocBlock(chapters);
