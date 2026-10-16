@@ -171,22 +171,37 @@ export function toParagraphs(body) {
   return body.map((l) => l.trim()).filter(Boolean);
 }
 
-const EMBEDDED_FIRST_CHAPTER = new RegExp(
-  `^(?<prefix>.*(?:內容|内容|處理|处理|稍後|稍后|正文|開始|开始).*?)(?<header>第[ \\t]*[${CN_NUM}]{1,12}[ \\t]*[章回節节折].{1,50})$`,
-  'u',
-);
+function cnNumber(value) {
+  if (/^[0-9０-９]+$/u.test(value)) return Number(value.replace(/[０-９]/gu, (c) => String(c.charCodeAt(0) - 0xff10)));
+  const digits = new Map([...`零〇一二兩两三四五六七八九`].map((c, i) => [c, [0, 0, 1, 2, 2, 2, 3, 4, 5, 6, 7, 8, 9][i]]));
+  const units = new Map([['十', 10], ['拾', 10], ['百', 100], ['千', 1000]]);
+  let section = 0; let number = 0;
+  for (const c of value) {
+    if (digits.has(c)) number = digits.get(c);
+    else if (units.has(c)) { section += (number || 1) * units.get(c); number = 0; }
+    else return null;
+  }
+  return section + number;
+}
 
 function repairEmbeddedFirstHeading(lines) {
-  const repaired = [...lines];
-  for (let i = 0; i < Math.min(20, repaired.length); i++) {
-    const m = EMBEDDED_FIRST_CHAPTER.exec(repaired[i].trim());
-    if (!m) continue;
-    const header = m.groups.header.replace(
-      new RegExp(`^(第[ \\t]*[${CN_NUM}]{1,12}[ \\t]*[章回節节折])`),
-      '$1 ',
-    );
-    repaired.splice(i, 1, m.groups.prefix.trim(), header.trim());
-    break;
+  const repaired = [];
+  let expected = 1;
+  for (const line of lines) {
+    const m = new RegExp(`第(?<num>[${CN_NUM}]{1,12})章`).exec(line);
+    if (!m || cnNumber(m.groups.num) !== expected) {
+      repaired.push(line);
+      continue;
+    }
+    const before = line.slice(0, m.index);
+    if (before.trim() && before.trim().length <= 12 && new RegExp(`^${HEADING_LABEL}$`, 'u').test(before.trim())) {
+      repaired.push(line);
+    } else {
+      if (before.trim()) repaired.push(before);
+      const header = line.slice(m.index).trim().replace(/^(第[^章]{1,12}章)/u, '$1 ');
+      repaired.push(header);
+    }
+    expected += 1;
   }
   return repaired;
 }

@@ -270,10 +270,32 @@ def to_paragraphs(body: list[str]) -> list[str]:
     return [line.strip() for line in body if line.strip()]
 
 
-_EMBEDDED_FIRST_CHAPTER = re.compile(
-    rf"(?P<prefix>.*(?:內容|内容|處理|处理|稍後|稍后|正文|開始|开始).*?)"
-    rf"(?P<header>第[ \t]*[{_CN_NUM}]{{1,12}}[ \t]*[章回節节折].{{1,50}})$"
+_INLINE_CHAPTER = re.compile(
+    rf"第(?P<num>[{_CN_NUM}]{{1,12}})章(?P<title>.{{1,50}})$"
 )
+
+
+def _cn_number(value: str) -> int | None:
+    if value.isdigit() or all("０" <= ch <= "９" for ch in value):
+        try:
+            return int(value.translate(str.maketrans("０１２３４５６７８９", "0123456789")))
+        except ValueError:
+            return None
+    digits = dict(zip("零〇一二兩两三四五六七八九", [0, 0, 1, 2, 2, 2, 3, 4, 5, 6, 7, 8, 9]))
+    units = {"十": 10, "拾": 10, "百": 100, "千": 1000}
+    total = 0
+    section = 0
+    number = 0
+    for ch in value:
+        if ch in digits:
+            number = digits[ch]
+        elif ch in units:
+            unit = units[ch]
+            section += (number or 1) * unit
+            number = 0
+        else:
+            return None
+    return total + section + number
 
 
 def _repair_embedded_first_heading(lines: list[str]) -> list[str]:
@@ -285,22 +307,29 @@ def _repair_embedded_first_heading(lines: list[str]) -> list[str]:
     Limit the repair to the first 20 lines and require release-metadata words so
     ordinary prose containing ``第一章`` is never rewritten.
     """
-    repaired = list(lines)
-    for i, line in enumerate(repaired[:20]):
-        match = _EMBEDDED_FIRST_CHAPTER.fullmatch(line.strip())
-        if not match:
-            continue
-        prefix = match.group("prefix").strip()
-        header = match.group("header").strip()
-        # Make the repaired header conform to the normal heading rule even
-        # when the source runs the title directly into 章.
-        header = re.sub(
-            rf"^(第[ \t]*[{_CN_NUM}]{{1,12}}[ \t]*[章回節节折])",
-            r"\1 ",
-            header,
-        )
-        repaired[i:i + 1] = [prefix, header]
-        break
+    repaired: list[str] = []
+    expected = 1
+    for line in lines:
+        rest = line
+        while True:
+            match = re.search(rf"第(?P<num>[{_CN_NUM}]{{1,12}})章", rest)
+            if not match or _cn_number(match.group("num")) != expected:
+                repaired.append(rest)
+                break
+
+            before = rest[: match.start()]
+            # Do not dismantle the already-supported short-label form such as
+            # 清心居第二章…; its prefix is part of the heading title.
+            if before and len(before.strip()) <= 12 and re.fullmatch(_HEADING_LABEL, before.strip()):
+                repaired.append(rest)
+            else:
+                if before.strip():
+                    repaired.append(before)
+                header = rest[match.start() :].strip()
+                header = re.sub(r"^(第[^章]{1,12}章)", r"\1 ", header)
+                repaired.append(header)
+            expected += 1
+            break
     return repaired
 
 
