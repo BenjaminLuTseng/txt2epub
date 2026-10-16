@@ -1,5 +1,7 @@
 import * as ingest from './ingest.js';
-import * as chap from './chapters.js';
+// Versioned filename prevents GitHub Pages/CDN/browser caches from serving the
+// pre-inline-heading parser after a deployment.
+import * as chap from './chapters-v2.js';
 import * as cover from './cover.js';
 import * as ai from './ai.js';
 import { build as buildEpub } from './epub.js';
