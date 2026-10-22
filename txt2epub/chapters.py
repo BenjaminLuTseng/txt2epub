@@ -162,6 +162,11 @@ def find_headings(lines: list[str], custom_regex: str | None = None) -> tuple[li
     # so it wins even when a looser family matched more lines.
     if len(found.get("cn_chapter", [])) >= 2:
         best_name, best_hits = "cn_chapter", found["cn_chapter"]
+        # Some releases change the heading decoration mid-book (for example
+        # plain 第三章 followed by 綠晨第四章). Both are still the same
+        # numbered chapter sequence and must be merged.
+        if len(found.get("cn_chapter_prefixed", [])) >= 2:
+            best_hits = sorted(set(best_hits) | set(found["cn_chapter_prefixed"]))
     elif len(found.get("cn_chapter_prefixed", [])) >= 2:
         best_name, best_hits = "cn_chapter_prefixed", found["cn_chapter_prefixed"]
         # A repaired first heading may use the normal form while the rest of

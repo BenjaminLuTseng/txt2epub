@@ -102,6 +102,9 @@ export function findHeadings(lines, customRegex) {
   if ((found.cn_chapter || []).length >= 2) {
     method = 'cn_chapter';
     best = found.cn_chapter;
+    if ((found.cn_chapter_prefixed || []).length >= 2) {
+      best = [...found.cn_chapter, ...found.cn_chapter_prefixed];
+    }
   } else if ((found.cn_chapter_prefixed || []).length >= 2) {
     method = 'cn_chapter_prefixed';
     best = [...found.cn_chapter_prefixed, ...strictSingle];
