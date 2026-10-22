@@ -1,7 +1,7 @@
 import * as ingest from './ingest.js';
 // Versioned filename prevents GitHub Pages/CDN/browser caches from serving the
 // pre-inline-heading parser after a deployment.
-import * as chap from './chapters-v3.js?rev=chapter-marker-only';
+import * as chap from './chapters-v3.js?rev=chapter-marker-only-2';
 import * as cover from './cover.js';
 import * as ai from './ai.js';
 import { build as buildEpub } from './epub.js';
@@ -173,7 +173,11 @@ async function analyze() {
         method: 'auto', headings, sampleLines, total: chapters.length,
       });
       if (review.note) bits.push('Chapters: ' + review.note);
-      if (review.verdict === 'use_regex' && review.regex) {
+      // For Chinese books, 第X章 is authoritative. Never let an AI review
+      // replace that deterministic split with a looser label-based regex.
+      const hasNumericChineseChapters = /^(zh|ja)/.test(doc.language) &&
+        chapters.some((c) => /第[零〇一二兩两三四五六七八九十百千壹贰叁肆伍陆柒捌玖拾０-９0-9]{1,12}章/u.test(c.title));
+      if (review.verdict === 'use_regex' && review.regex && !hasNumericChineseChapters) {
         try {
           const result = chap.split(doc.lines, review.regex, doc.language);
           if (result.chapters.length > 1 && result.chapters.length <= 5000) {
@@ -206,6 +210,10 @@ function renderChapters() {
   $('chap-count').textContent = chapters.length;
 
   chapters.forEach((c, index) => {
+    // Keep the displayed EPUB chapter title to the requested marker only,
+    // even if an older cached split or an external review supplied a label.
+    const marker = c.title.match(/第[零〇一二兩两三四五六七八九十百千壹贰叁肆伍陆柒捌玖拾０-９0-9]{1,12}章/u);
+    if (marker) c.title = marker[0];
     const li = document.createElement('li');
     li.className = c.include ? '' : 'off';
 
