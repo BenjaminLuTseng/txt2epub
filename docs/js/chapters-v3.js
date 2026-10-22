@@ -1,8 +1,7 @@
 // Split a plain-text book into chapters.
 //
-// 第…章 wins outright whenever it appears — in a Chinese book that construction
-// *is* the chapter structure, and letting a looser pattern outvote it on raw
-// count is how you end up splitting a novel on its page numbers.
+// Every 第X章 marker is a chapter boundary. Markers may be embedded in a line
+// and may have release labels before them; those labels are ignored.
 
 const CN_NUM = '零一二三四五六七八九十百千两〇壹贰叁肆伍陆柒捌玖拾０-９0-9';
 export const MAX_HEADING_LEN = 60;
@@ -10,7 +9,6 @@ export const MAX_HEADING_LEN = 60;
 // Real-world headings often carry a section marker or brackets:
 //   正文 第一章 初雪   /   【第一章】初雪   /   ★第一章 初雪
 const PREFIX = '(?:[【\\[（(★☆◆◇※·\\-—=＝\\s　]*(?:正文|VIP|vip|卷[一二三四五六七八九十0-9]*)?[】\\]）)\\s　]*)?';
-const HEADING_LABEL = '[一-鿿A-Za-z0-9·・—\\-]{1,12}';
 const TAIL = '[ \\t　]*[:：、.．\\-—~～]?[ \\t　]*(?<title>.{0,50}?)[】\\]）)]?$';
 
 export const PATTERNS = [
@@ -20,10 +18,6 @@ export const PATTERNS = [
     // separate, coarser level and must not dilute this family's count.
     'cn_chapter',
     new RegExp(`^${PREFIX}第[ \\t]*[${CN_NUM}]{1,12}[ \\t]*[章回節节折](?![\\u4e00-\\u9fff])${TAIL}`, 'u'),
-  ],
-  [
-    'cn_chapter_prefixed',
-    new RegExp(`^${HEADING_LABEL}第[ \\t]*[${CN_NUM}]{1,12}[ \\t]*[章回節节折]${TAIL}`, 'u'),
   ],
   [
     'cn_volume',
@@ -98,16 +92,9 @@ export function findHeadings(lines, customRegex) {
 
   let method = '';
   let best = [];
-  const strictSingle = candidateLines(lines, PATTERNS.find(([n]) => n === 'cn_chapter')[1]);
   if ((found.cn_chapter || []).length >= 2) {
     method = 'cn_chapter';
     best = found.cn_chapter;
-    if ((found.cn_chapter_prefixed || []).length >= 2) {
-      best = [...found.cn_chapter, ...found.cn_chapter_prefixed];
-    }
-  } else if ((found.cn_chapter_prefixed || []).length >= 2) {
-    method = 'cn_chapter_prefixed';
-    best = [...found.cn_chapter_prefixed, ...strictSingle];
   } else {
     for (const [name, hits] of Object.entries(found)) {
       if (hits.length > best.length) {
@@ -117,13 +104,9 @@ export function findHeadings(lines, customRegex) {
     }
   }
 
-  const extra = new Set(candidateLines(lines, SPECIAL));
-  // Volume lines are a coarser level, not a rival: keep them so a 卷 divider
-  // gets its own entry instead of being swallowed by the chapter above it.
-  if (method === 'cn_chapter' || method === 'cn_chapter_prefixed') {
-    for (const i of found.cn_volume || []) extra.add(i);
-  }
-
+  // Once 第…章 exists, it is the only Chinese chapter signal. Do not add
+  // release labels such as 卷 or 序 as competing chapter entries.
+  const extra = method === 'cn_chapter' ? new Set() : new Set(candidateLines(lines, SPECIAL));
   const merged = [...new Set([...best, ...extra])].sort((a, b) => a - b);
   return { idxs: merged, method: merged.length ? method || 'special_only' : 'none' };
 }
@@ -189,22 +172,21 @@ function cnNumber(value) {
 
 function repairEmbeddedFirstHeading(lines) {
   const repaired = [];
-  let expected = 1;
   for (const line of lines) {
-    const m = new RegExp(`第(?<num>[${CN_NUM}]{1,12})章`).exec(line);
-    if (!m || cnNumber(m.groups.num) !== expected) {
+    const matches = [...line.matchAll(new RegExp(`第(?<num>[${CN_NUM}]{1,12})章`, 'gu'))];
+    if (!matches.length) {
       repaired.push(line);
       continue;
     }
-    const before = line.slice(0, m.index);
-    if (before.trim() && before.trim().length <= 12 && new RegExp(`^${HEADING_LABEL}$`, 'u').test(before.trim())) {
-      repaired.push(line);
-    } else {
+    let cursor = 0;
+    for (const match of matches) {
+      const before = line.slice(cursor, match.index);
       if (before.trim()) repaired.push(before);
-      const header = line.slice(m.index).trim().replace(/^(第[^章]{1,12}章)/u, '$1 ');
-      repaired.push(header);
+      repaired.push(`第${match.groups.num}章`);
+      cursor = match.index + match[0].length;
     }
-    expected += 1;
+    const after = line.slice(cursor);
+    if (after.trim()) repaired.push(after);
   }
   return repaired;
 }
@@ -256,5 +238,18 @@ export function split(lines, customRegex, language = 'en') {
 
   const trimmed = dropTocBlock(chapters);
   if (trimmed.dropped) method += ` (dropped ${trimmed.dropped}-entry contents list)`;
-  return { chapters: trimmed.chapters, method };
+
+  // Keep front matter in place, but force all 第X章 entries into numeric order.
+  const output = trimmed.chapters;
+  const numbered = output
+    .map((chapter, index) => {
+      const match = /^第(?<num>[零〇一二兩两三四五六七八九十百千壹贰叁肆伍陆柒捌玖拾０-９0-9]{1,12})章$/u.exec(chapter.title);
+      return match ? { index, number: cnNumber(match.groups.num), chapter } : null;
+    })
+    .filter((item) => item && item.number != null);
+  if (numbered.length >= 2) {
+    const sorted = [...numbered].sort((a, b) => a.number - b.number);
+    numbered.forEach((item, index) => { output[item.index] = sorted[index].chapter; });
+  }
+  return { chapters: output, method };
 }

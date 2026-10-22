@@ -1,10 +1,9 @@
 """Split a plain-text book into chapters.
 
-Strategy: run every heading pattern we know over the file, then pick a winner.
-`第…章` wins outright whenever it appears in any quantity — in a Chinese book
-that construction *is* the chapter structure, and letting a looser pattern
-outvote it on raw count is how you end up splitting a novel on its page
-numbers. Every other family competes on how many lines it explains.
+For Chinese books, every occurrence of `第X章` is the chapter boundary. The
+marker may be embedded in a line and may have release labels before it; those
+labels are deliberately ignored. The resulting heading is always exactly
+`第X章`.
 
 Volume headings (第…卷) and front/back matter (序, 楔子, Prologue, ...) are
 folded in alongside the winner rather than competing with it. Bare-number
@@ -26,12 +25,6 @@ MAX_HEADING_LEN = 60
 # Real-world .txt headings often carry a section marker or brackets:
 #   正文 第一章 初雪   /   【第一章】初雪   /   ★第一章 初雪
 _PREFIX = r"(?:[【\[（(★☆◆◇※·\-—=＝\s　]*(?:正文|VIP|vip|卷[一二三四五六七八九十0-9]*)?[】\]）)\s　]*)?"
-# Some ebook releases prepend a short series/section label to every heading:
-#   清心居第二章引人入峒
-# Keep this deliberately short and require the heading to occupy the whole
-# line; prose containing "第一章" in the middle of a sentence must not match.
-_HEADING_LABEL = r"[一-鿿A-Za-z0-9·・—\-]{1,12}"
-_LABEL_PREFIX = rf"(?:{_HEADING_LABEL})?"
 _TAIL = r"[ \t　]*[:：、.．\-—~～]?[ \t　]*(?P<title>.{0,50}?)[】\]）)]?$"
 
 PATTERNS: list[tuple[str, re.Pattern[str]]] = [
@@ -45,17 +38,6 @@ PATTERNS: list[tuple[str, re.Pattern[str]]] = [
         "cn_chapter",
         re.compile(
             rf"^{_PREFIX}第[ \t]*[{_CN_NUM}]{{1,12}}[ \t]*[章回節节折](?![一-鿿]){_TAIL}"
-        ),
-    ),
-    (
-        # A common serialized-book format prefixes every heading with a short
-        # section label and runs the title directly into 章:
-        #   清心居第二章引人入峒
-        # It is kept separate so the normal prose-safety guard above remains
-        # intact; find_headings only promotes this family when it repeats.
-        "cn_chapter_prefixed",
-        re.compile(
-            rf"^{_HEADING_LABEL}第[ \t]*[{_CN_NUM}]{{1,12}}[ \t]*[章回節节折]{_TAIL}"
         ),
     ),
     (
@@ -151,41 +133,21 @@ def find_headings(lines: list[str], custom_regex: str | None = None) -> tuple[li
             continue
         found[name] = hits
 
-    # Keep a single strict heading available for a mixed sequence where the
-    # first chapter was repaired from release metadata and the remaining
-    # headings carry a short prefix.
-    strict_single = _candidate_lines(
-        lines, dict(PATTERNS)["cn_chapter"]
-    )
-
     # 第…章 decides. A book that uses it has its chapter structure right there,
     # so it wins even when a looser family matched more lines.
     if len(found.get("cn_chapter", [])) >= 2:
         best_name, best_hits = "cn_chapter", found["cn_chapter"]
-        # Some releases change the heading decoration mid-book (for example
-        # plain 第三章 followed by 綠晨第四章). Both are still the same
-        # numbered chapter sequence and must be merged.
-        if len(found.get("cn_chapter_prefixed", [])) >= 2:
-            best_hits = sorted(set(best_hits) | set(found["cn_chapter_prefixed"]))
-    elif len(found.get("cn_chapter_prefixed", [])) >= 2:
-        best_name, best_hits = "cn_chapter_prefixed", found["cn_chapter_prefixed"]
-        # A repaired first heading may use the normal form while the rest of
-        # the release uses a repeated label prefix. Keep both parts of the
-        # same chapter sequence.
-        if strict_single:
-            best_hits = sorted(set(best_hits) | set(strict_single))
     elif found:
         best_name, best_hits = max(found.items(), key=lambda kv: len(kv[1]))
     else:
         best_name, best_hits = "", []
 
-    extra: set[int] = set(_candidate_lines(lines, SPECIAL))
+    # Once 第…章 exists, it is the only Chinese chapter signal. Do not add
+    # labels such as 卷 or 序 as competing chapter entries.
+    extra: set[int] = set() if best_name == "cn_chapter" else set(_candidate_lines(lines, SPECIAL))
     # Volume lines are a coarser level, not a rival: keep them as headings so a
     # 卷 divider gets its own entry instead of being swallowed by the chapter
     # above it.
-    if best_name in ("cn_chapter", "cn_chapter_prefixed"):
-        extra |= set(found.get("cn_volume", []))
-
     merged = sorted(set(best_hits) | extra)
     if not merged:
         return [], "none"
@@ -304,37 +266,28 @@ def _cn_number(value: str) -> int | None:
 
 
 def _repair_embedded_first_heading(lines: list[str]) -> list[str]:
-    """Separate a first chapter header accidentally glued to release metadata.
+    """Split every 第X章 marker, wherever it occurs in a source line.
 
-    A few wuxia releases begin with a status line such as
-    ``內容還在處理中,請稍後重第一章千裡求方`` and then continue the chapter body
-    on the following line.  Treating that entire line as prose loses chapter 1.
-    Limit the repair to the first 20 lines and require release-metadata words so
-    ordinary prose containing ``第一章`` is never rewritten.
+    The text before a marker remains body text, while the marker becomes an
+    exact heading. This intentionally discards labels such as 綠晨, 清心居,
+    and upload-site boilerplate before the marker.
     """
     repaired: list[str] = []
-    expected = 1
     for line in lines:
-        rest = line
-        while True:
-            match = re.search(rf"第(?P<num>[{_CN_NUM}]{{1,12}})章", rest)
-            if not match or _cn_number(match.group("num")) != expected:
-                repaired.append(rest)
-                break
-
-            before = rest[: match.start()]
-            # Do not dismantle the already-supported short-label form such as
-            # 清心居第二章…; its prefix is part of the heading title.
-            if before and len(before.strip()) <= 12 and re.fullmatch(_HEADING_LABEL, before.strip()):
-                repaired.append(rest)
-            else:
-                if before.strip():
-                    repaired.append(before)
-                header = rest[match.start() :].strip()
-                header = re.sub(r"^(第[^章]{1,12}章)", r"\1 ", header)
-                repaired.append(header)
-            expected += 1
-            break
+        matches = list(re.finditer(rf"第(?P<num>[{_CN_NUM}]{{1,12}})章", line))
+        if not matches:
+            repaired.append(line)
+            continue
+        cursor = 0
+        for match in matches:
+            before = line[cursor : match.start()]
+            if before.strip():
+                repaired.append(before)
+            repaired.append(f"第{match.group('num')}章")
+            cursor = match.end()
+        after = line[cursor:]
+        if after.strip():
+            repaired.append(after)
     return repaired
 
 
@@ -370,5 +323,19 @@ def split(
     chapters, dropped = _drop_toc_block(chapters)
     if dropped:
         method += f" (dropped {dropped}-entry contents list)"
+
+    # Keep any front matter in place, but force all detected 第X章 entries into
+    # numeric order even when the source file places them out of order.
+    numbered = []
+    for pos, chapter in enumerate(chapters):
+        match = re.fullmatch(rf"第(?P<num>[{_CN_NUM}]{{1,12}})章", chapter.title)
+        if match:
+            number = _cn_number(match.group("num"))
+            if number is not None:
+                numbered.append((pos, number, chapter))
+    if len(numbered) >= 2:
+        ordered = sorted(numbered, key=lambda item: item[1])
+        for (pos, _, _), (_, _, chapter) in zip(numbered, ordered):
+            chapters[pos] = chapter
 
     return chapters, method
